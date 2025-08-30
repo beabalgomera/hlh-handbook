@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>HLH Handbook Webapp</title>
+  <style>
+    :root { --b:#0b0b0c; --t:#111827; --m:#6b7280; --bg:#f8fafc; --w:#fff; --br:#e5e7eb; }
+    * { box-sizing:border-box }
+    body { margin:0; font:14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"; background:var(--bg); color:var(--t); }
+    header { position:sticky; top:0; background:#fffccf; border-bottom:1px solid var(--br); z-index:10 }
+    .wrap { max-width:1100px; margin:0 auto; padding:14px 16px }
+    .h1 { font-weight:800; font-size:18px }
+    .bar { display:flex; gap:8px; align-items:center }
+    .btn { display:inline-flex; gap:6px; align-items:center; border:1px solid var(--br); background:var(--w); padding:8px 10px; border-radius:10px; cursor:pointer }
+    .btn:hover { background:#fafafa }
+    .grid { display:grid; grid-template-columns:1fr; gap:16px; }
+    @media (min-width:900px){ .grid{ grid-template-columns: 380px 1fr } }
+    .card { background:var(--w); border:1px solid var(--br); border-radius:14px; padding:14px }
+    .field { display:flex; align-items:center; gap:8px; border:1px solid var(--br); background:var(--w); padding:8px 10px; border-radius:10px }
+    .muted { color:var(--m) }
+    .list { display:grid; gap:10px }
+    .item { text-align:left; border:1px solid var(--br); background:var(--w); padding:12px; border-radius:12px; cursor:pointer }
+    .item:hover { background:#fafafa }
+    .pill { padding:2px 8px; border:1px solid var(--br); border-radius:999px; font-size:12px; color:#374151; background:#f9fafb }
+    .row { display:flex; justify-content:space-between; gap:12px }
+    .title { font-weight:700 }
+    .s { font-size:12px }
+    pre { white-space:pre-wrap; background:#0b1220; color:#e5e7eb; padding:12px; border-radius:12px; overflow:auto }
+    a { color:#0a58ca; text-decoration:none }
+    a:hover { text-decoration:underline }
+    .footer { color:var(--m); font-size:12px; padding:24px 16px 40px }
+  </style>
+  <!-- React (CDN) + XLSX parser -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/xlsx/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+  <header>
+    <div class="wrap bar">
+      <div class="h1">HLH Handbook Webapp (Free • Client‑only)</div>
+      <div style="margin-left:auto" class="bar">
+        <label class="btn">
+          <span>Upload XLSX</span>
+          <input id="file" type="file" accept=".xlsx,.xls" style="display:none" />
+        </label>
+        <button id="clear" class="btn">Clear Cache</button>
+        <a id="assistant" class="btn" target="_blank" rel="noreferrer">Open HLH Assistant</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap grid">
+    <section class="card">
+      <div class="field">
+        <span>🔎</span>
+        <input id="q" placeholder="Search internal/external name, city, address…" style="border:0; outline:none; flex:1" />
+      </div>
+      <div class="bar s" style="margin-top:8px">
+        <span class="muted">Parking:</span>
+        <button class="btn s" data-filter="all">All</button>
+        <button class="btn s" data-filter="free">Free</button>
+        <button class="btn s" data-filter="paid">Paid</button>
+        <button class="btn s" data-filter="off premises">Off‑prem</button>
+      </div>
+      <div id="list" class="list" style="margin-top:12px"></div>
+      <div id="empty" class="muted s" style="display:none; margin-top:12px">Upload <b>HLH Property Inventory‑2.xlsx</b> to get started.</div>
+    </section>
+
+    <section id="details"></section>
+  </main>
+
+  <div class="wrap footer">Under‑promise, over‑deliver. All data stays on this device. Host for free on GitHub Pages.</div>
+
+  <script>
+    const STORAGE_KEY = 'hlh_inventory_v1';
+    const GPT_SHARE_URL = 'https://chat.openai.com/g/gpt-share-link'; // TODO: replace with your GPT share link
+
+    const COLUMNS = {
+      internal: 'Listing Name (Internal)',
+      external: 'Listing Name (External)',
+      link: 'Listing Link',
+      platform: 'Platform (Airbnb, Booking.com, Agoda, Direct, etc.)',
+      type: 'Type of Listing (Condo, Apartment, House, Villa, Resort, Hotel)',
+      maxGuests: 'Max Number of Guests',
+      rooms: 'Number of Rooms',
+      baths: 'Number of Bathrooms',
+      kitchens: 'Number of Kitchens',
+      living: 'Number of Living Rooms',
+      carpark: 'Carpark (Free/Paid on premises/Paid off premises)',
+      areas: 'Other Areas (Garden, Patio, Balcony)',
+      size: 'Size (sqm)',
+      country: 'Country',
+      city: 'City',
+      address: 'Complete Address',
+      notes: 'Other Notes',
+      owner: 'Client/Owner Name',
+      status: 'Property Status (Managed / Leased / Owned / Co-hosted)',
+      acquired: 'Date Acquired',
+      commission: 'Commission Rate (%)',
+      monthly: 'Monthly Payment',
+      access: 'Co-hosting Access',
+    };
+
+    const SOP = {
+      checkin: '3:00 PM onwards',
+      checkout: '10:00 AM (strict)',
+      rules: [
+        'Early check‑in / late check‑out subject to availability (check shoulder nights first).',
+        'Half‑day rate: 60–70% of average nightly rate (before 3 PM check‑in / until 6–7 PM check‑out).',
+        'Full‑night rate: before 7 AM check‑in or after 7 PM check‑out.',
+        'Billing rule for late checkout: charge 70% of the nightly rate for the day of checkout (not the original booked night). Verify on the Airbnb calendar.'
+      ],
+      luggage: [
+        'Pre check‑in: complimentary from 12 PM onwards.',
+        'Post check‑out: complimentary until 12 NN.',
+        'Outside these times: recommend nearby storage facilities.'
+      ],
+      parking: {
+        fee: '$40/night standard (prorated).',
+        priority: [
+          'MB10 has priority slot.',
+          'MB03 & MB13 may use MB10 if unbooked.'
+        ],
+        notes: [
+          'MB01, MB12, MB15, MB80 – no parking (offer nearby).',
+          'MB03, MB13, MB81 – may use MB10 (if free).',
+          'MB10 – dedicated slot + guest gym/pool Level 7.',
+          'MB14 – Clarendon Parking.',
+          'MB16 – Lot 7 (unit 603).',
+          'MB17 – Lot 10 (unit 703).',
+          'MB18 – Lot 6 (unit 803).',
+          'DL units include parking unless noted.'
+        ]
+      },
+      propertyNotes: [
+        'DL: baby beds available at $15/night; minimum 4–5 nights.',
+        'MB14/MB15: early check‑in half‑day rate $80/$70.',
+        'MB16/17/18: central heater in living room only; portable heaters on request (last option).',
+        'MB17: king‑split bedding requests $60; sofa‑bed linen $60.',
+        'MB18: no twin bed option; sofa converts to bed.'
+      ],
+      other: [
+        'Mailbox: no access in most apts → suggest Parcel Collect/PO Box (Australia Post).',
+        'Porta‑cot/highchair: $30/night (unless listing‑specific).',
+        'Towels: 1 per guest per booking (extras not guaranteed).',
+        'Door won’t open: verify PIN and push firmly (wind can add resistance if windows/balcony are open).'
+      ],
+      voice: 'Warm, professional, direct, proactive. Office: 7:00 AM – 4:00 PM (PH). Reply within 10 minutes during office hours.'
+    };
+
+    // Tiny helpers
+    const $ = (s) => document.querySelector(s);
+    const listEl = $('#list');
+    const detailsEl = $('#details');
+    const emptyEl = $('#empty');
+    const qEl = $('#q');
+    const fileEl = $('#file');
+    const clearEl = $('#clear');
+    const assistantEl = $('#assistant');
+
+    assistantEl.href = GPT_SHARE_URL; // set link (you'll replace the constant once you have the share URL)
+
+    let DATA = [];
+    try {
+      const cached = localStorage.getItem(STORAGE_KEY);
+      if (cached) DATA = JSON.parse(cached);
+    } catch {}
+
+    function save(rows){ localStorage.setItem(STORAGE_KEY, JSON.stringify(rows)); DATA = rows; renderList(); showEmptyIfNeeded(); detailsEl.innerHTML = '' }
+    function clear(){ localStorage.removeItem(STORAGE_KEY); DATA = []; renderList(); showEmptyIfNeeded(); detailsEl.innerHTML = '' }
+
+    function normalizeRow(row){
+      const get = (k) => row?.[k] ?? '';
+      const n = (v) => (v==null || v==='' ? '' : v);
+      return Object.fromEntries(Object.entries(COLUMNS).map(([key, col]) => [key, n(get(col))]));
+    }
+
+    function onFile(e){
+      const f = e.target.files?.[0];
+      if(!f) return;
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        const wb = XLSX.read(evt.target.result, { type:'binary' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(ws, { defval:'' }).map(normalizeRow);
+        save(rows);
+      };
+      reader.readAsBinaryString(f);
+    }
+
+    function renderList(){
+      const q = (qEl.value||'').toLowerCase().trim();
+      const active = document.querySelector('.btn.s.active');
+      const parkingFilter = active ? active.getAttribute('data-filter') : 'all';
+      let rows = DATA;
+      if(q){
+        rows = rows.filter(r => [r.internal, r.external, r.city, r.address].some(v => (v||'').toLowerCase().includes(q)));
+      }
+      if(parkingFilter!== 'all'){
+        rows = rows.filter(r => (r.carpark||'').toLowerCase().includes(parkingFilter));
+      }
+      listEl.innerHTML = rows.map((r,i)=>{
+        return `<button class="item" data-idx="${i}">
+          <div class="row"><div>
+            <div class="title">${r.internal || r.external || 'Unnamed'}</div>
+            ${r.external? `<div class="muted s">${r.external}</div>`:''}
+            <div class="muted s" style="margin-top:4px">${r.type||'—'} • ${r.city||'—'} • ${r.carpark||'Parking n/a'}</div>
+          </div>
+          <div class="pill">Guests: ${r.maxGuests||'—'}</div></div>
+        </button>`
+      }).join('');
+    }
+
+    function detailBlock(r){
+      function li(s){ return `<li>${s}</li>` }
+      return `
+        <div class="card">
+          <div class="row" style="align-items:center">
+            <div>
+              <div class="title" style="font-size:18px">${r.internal || r.external || 'Listing'}</div>
+              ${r.external? `<div class="muted s">${r.external}</div>`:''}
+            </div>
+            ${r.link? `<a class="btn s" href="${r.link}" target="_blank">Open listing</a>`:''}
+          </div>
+
+          <div style="margin-top:12px">
+            <div class="title">Overview</div>
+            <div class="s" style="margin-top:6px">
+              <div>Type: ${r.type||'—'}</div>
+              <div>Capacity: Guests ${r.maxGuests||'—'} • Rooms ${r.rooms||'—'} • Baths ${r.baths||'—'} • Kitchens ${r.kitchens||'—'} • Living Rooms ${r.living||'—'}</div>
+              <div>Size: ${r.size||'—'} sqm</div>
+              <div>Areas/Amenities: ${r.areas||'—'}</div>
+            </div>
+          </div>
+
+          <div style="margin-top:12px">
+            <div class="title">Location & Links</div>
+            <div class="s" style="margin-top:6px">
+              <div>Address: ${r.address||'—'}</div>
+              <div>City/Country: ${r.city||'—'}, ${r.country||'—'}</div>
+              <div>Platform(s): ${r.platform||'—'}</div>
+              <div>Link: ${r.link? `<a href="${r.link}" target="_blank">${r.link}</a>`:'—'}</div>
+            </div>
+          </div>
+
+          <div style="margin-top:12px">
+            <div class="title">Check‑in & Check‑out</div>
+            <ul class="s" style="margin-top:6px">
+              ${li(`Standard: ${SOP.checkin} / ${SOP.checkout}`)}
+              ${SOP.rules.map(li).join('')}
+            </ul>
+          </div>
+
+          <div style="margin-top:12px">
+            <div class="title">Luggage Storage</div>
+            <ul class="s" style="margin-top:6px">${SOP.luggage.map(li).join('')}</ul>
+          </div>
+
+          <div style="margin-top:12px">
+            <div class="title">Parking</div>
+            <ul class="s" style="margin-top:6px">
+              ${li(`Listing carpark: ${r.carpark||'—'}`)}
+              ${li(SOP.parking.fee)}
+              ${SOP.parking.priority.map(li).join('')}
+              ${SOP.parking.notes.map(li).join('')}
+            </ul>
+          </div>
+
+          <div style="margin-top:12px">
+            <div class="title">Property‑Specific Notes</div>
+            <ul class="s" style="margin-top:6px">
+              ${li(r.notes||'—')}
+              ${SOP.propertyNotes.map(li).join('')}
+            </ul>
+          </div>
+
+          <div style="margin-top:12px">
+            <div class="title">Other Guest Concerns</div>
+            <ul class="s" style="margin-top:6px">${SOP.other.map(li).join('')}</ul>
+          </div>
+
+          <div style="margin-top:12px">
+            <div class="title">Internal Admin</div>
+            <div class="s" style="margin-top:6px">
+              <div>Owner: ${r.owner||'—'} • Status: ${r.status||'—'} • Date Acquired: ${r.acquired||'—'}</div>
+              <div>Commission: ${r.commission||'—'} • Monthly: ${r.monthly||'—'} • Access: ${r.access||'—'}</div>
+            </div>
+          </div>
+
+          <div style="margin-top:12px" class="bar">
+            <button class="btn s" onclick="copyBlock()">Copy full block</button>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:12px">
+          <div class="title">Copy‑ready block for this listing</div>
+          <pre id="copy">${formatBlock(r)}</pre>
+        </div>
+      `;
+    }
+
+    function formatBlock(r){
+      const L = [];
+      L.push(`**${r.internal || r.external || 'Listing'}**`);
+      if(r.external) L.push(`External Name: ${r.external}`);
+      L.push(`Type: ${r.type||'—'}`);
+      L.push(`Capacity: Guests ${r.maxGuests||'—'} • Rooms ${r.rooms||'—'} • Baths ${r.baths||'—'} • Kitchens ${r.kitchens||'—'} • Living Rooms ${r.living||'—'}`);
+      L.push(`Size: ${r.size||'—'} sqm`);
+      L.push(`Areas/Amenities: ${r.areas||'—'}`);
+      L.push(`Address: ${r.address||'—'}`);
+      L.push(`City/Country: ${r.city||'—'}, ${r.country||'—'}`);
+      L.push(`Platform(s): ${r.platform||'—'}`);
+      L.push(`Link: ${r.link||'—'}`);
+      L.push('');
+      L.push('CHECK‑IN / CHECK‑OUT');
+      L.push(`- Standard: ${SOP.checkin} / ${SOP.checkout}`);
+      SOP.rules.forEach(r=>L.push(`- ${r}`));
+      L.push('');
+      L.push('LUGGAGE STORAGE');
+      SOP.luggage.forEach(r=>L.push(`- ${r}`));
+      L.push('');
+      L.push('PARKING');
+      L.push(`- Listing carpark: ${r.carpark||'—'}`);
+      L.push(`- ${SOP.parking.fee}`);
+      SOP.parking.priority.forEach(r=>L.push(`- ${r}`));
+      SOP.parking.notes.forEach(r=>L.push(`- ${r}`));
+      L.push('');
+      L.push('PROPERTY‑SPECIFIC NOTES');
+      L.push(`- ${r.notes||'—'}`);
+      SOP.propertyNotes.forEach(r=>L.push(`- ${r}`));
+      L.push('');
+      L.push('OTHER GUEST CONCERNS');
+      SOP.other.forEach(r=>L.push(`- ${r}`));
+      L.push('');
+      L.push('INTERNAL ADMIN');
+      L.push(`- Owner: ${r.owner||'—'} • Status: ${r.status||'—'} • Date Acquired: ${r.acquired||'—'}`);
+      L.push(`- Commission: ${r.commission||'—'} • Monthly: ${r.monthly||'—'} • Access: ${r.access||'—'}`);
+      L.push('');
+      L.push('COMMUNICATION');
+      L.push(`- ${SOP.voice}`);
+      return L.join('\n');
+    }
+
+    function copyBlock(){
+      const el = document.getElementById('copy');
+      const text = el ? el.textContent : '';
+      navigator.clipboard.writeText(text);
+      alert('Copied');
+    }
+
+    function showEmptyIfNeeded(){
+      emptyEl.style.display = DATA.length? 'none':'block';
+    }
+
+    // Events
+    fileEl.addEventListener('change', onFile);
+    clearEl.addEventListener('click', clear);
+    qEl.addEventListener('input', renderList);
+
+    document.querySelectorAll('[data-filter]').forEach(btn=>{
+      btn.addEventListener('click', (e)=>{
+        document.querySelectorAll('.btn.s').forEach(b=>b.classList.remove('active'));
+        e.currentTarget.classList.add('active');
+        renderList();
+      })
+    })
+
+    listEl.addEventListener('click', (e)=>{
+      const btn = e.target.closest('button.item');
+      if(!btn) return;
+      const idx = Number(btn.getAttribute('data-idx'));
+      const q = (qEl.value||'').toLowerCase().trim();
+      const active = document.querySelector('.btn.s.active');
+      const filter = active? active.getAttribute('data-filter'):'all';
+      let rows = DATA;
+      if(q){ rows = rows.filter(r => [r.internal, r.external, r.city, r.address].some(v => (v||'').toLowerCase().includes(q))); }
+      if(filter!=='all'){ rows = rows.filter(r => (r.carpark||'').toLowerCase().includes(filter)); }
+      const r = rows[idx];
+      detailsEl.innerHTML = detailBlock(r);
+      window.scrollTo({ top:0, behavior:'smooth' });
+    });
+
+    // Initial render
+    showEmptyIfNeeded();
+    renderList();
+  </script>
+</body>
+</html>
